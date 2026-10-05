@@ -1,6 +1,7 @@
-use std::{format, println};
-
+use ::std::process::Command;
 use serde::Deserialize;
+use std::os::unix::fs::symlink;
+use std::{format, println};
 
 #[derive(Debug, Deserialize)]
 struct Repository {
@@ -86,9 +87,45 @@ fn install(package_name: &str, repo: &Repository) {
                 .expect("Failed to read package");
 
             let filename = format!("/tmp/{}-{}-x86_64.tar.zst", package.name, package.version);
-            std::fs::write(filename, bytes).expect("failed to save package");
+            std::fs::write(&filename, bytes).expect("failed to save package");
 
-            println!("Downloaded!")
+            println!("Downloaded!");
+
+            let home = std::env::var("HOME").expect("Could not determine home directory");
+
+            let install_dir = format!(
+                "{}/.local/share/izac/packages/{}/{}",
+                home, package.name, package.version
+            );
+
+            std::fs::create_dir_all(&install_dir).expect("Failed to create install directory");
+
+            let status = Command::new("tar")
+                .args([
+                    "--zstd",
+                    "-xf",
+                    filename.as_str(),
+                    "-C",
+                    install_dir.as_str(),
+                ])
+                .status()
+                .expect("Failed to run tar");
+
+            if !status.success() {
+                println!("Failed to extract package");
+                return;
+            }
+
+            let binary = format!("{}/bin/{}", install_dir, package.name);
+            let link = format!("{}/.local/bin/{}", home, package.name);
+
+            std::fs::create_dir_all(format!("{}/.local/bin", home))
+                .expect("Failed to create ~/.local/bin");
+
+            println!("Binary: {}", binary);
+            println!("Link: {}", link);
+
+            symlink(&binary, &link).expect("Failed to create symlink");
         }
         None => {
             println!("Package not found")
