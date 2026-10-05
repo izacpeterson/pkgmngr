@@ -91,6 +91,8 @@ fn main() {
                 }
             }
 
+            "upgrade" => upgrade(&repo),
+
             _ => println!("Unknown command"),
         }
     } else {
@@ -142,74 +144,104 @@ fn install(package_name: &str, repo: &Repository) {
                 return;
             }
 
-            println!(
-                "Found {} - {} - {}",
-                package.name, package.version, package.description
-            );
-
-            let response = reqwest::blocking::get(&package.url);
-            let bytes = response
-                .expect("Failed to download package")
-                .bytes()
-                .expect("Failed to read package");
-
-            let filename = format!("/tmp/{}-{}-x86_64.tar.zst", package.name, package.version);
-            std::fs::write(&filename, bytes).expect("failed to save package");
-
-            println!("Downloaded!");
-
-            let home = std::env::var("HOME").expect("Could not determine home directory");
-
-            let install_dir = format!(
-                "{}/.local/share/izac/packages/{}/{}",
-                home, package.name, package.version
-            );
-
-            std::fs::create_dir_all(&install_dir).expect("Failed to create install directory");
-
-            let status = Command::new("tar")
-                .args([
-                    "--zstd",
-                    "-xf",
-                    filename.as_str(),
-                    "-C",
-                    install_dir.as_str(),
-                ])
-                .status()
-                .expect("Failed to run tar");
-
-            if !status.success() {
-                println!("Failed to extract package");
-                return;
-            }
-
-            let binary = format!("{}/bin/{}", install_dir, package.name);
-            let link = format!("{}/.local/bin/{}", home, package.name);
-
-            std::fs::create_dir_all(format!("{}/.local/bin", home))
-                .expect("Failed to create ~/.local/bin");
-
-            println!("Binary: {}", binary);
-            println!("Link: {}", link);
-
-            // Replace a stale symlink (e.g. from an install made before the record
-            // existed), but never clobber a real file someone else put there.
-            if let Ok(meta) = std::fs::symlink_metadata(&link) {
-                if meta.file_type().is_symlink() {
-                    std::fs::remove_file(&link).expect("Failed to remove old symlink");
-                } else {
-                    println!("{} exists and is not a symlink, not overwriting", link);
-                    return;
-                }
-            }
-
-            symlink(&binary, &link).expect("Failed to create symlink");
-
-            record_install(&package.name, &package.version);
-            println!("Installed {} {}", package.name, package.version);
+            download_and_install(package);
         }
         None => {
             println!("Package not found")
         }
     }
+}
+
+fn upgrade(repo: &Repository) {
+    let installed = load_installed();
+    let mut upgraded = 0;
+
+    for current in &installed.packages {
+        let Some(latest) = repo.packages.iter().find(|p| p.name == current.name) else {
+            println!("{} is no longer in the repository, skipping", current.name);
+            continue;
+        };
+
+        if latest.version == current.version {
+            continue;
+        }
+
+        println!(
+            "Upgrading {} {} -> {}",
+            current.name, current.version, latest.version
+        );
+        download_and_install(latest);
+        upgraded += 1;
+    }
+
+    if upgraded == 0 {
+        println!("Everything is up to date");
+    }
+}
+
+fn download_and_install(package: &Package) {
+    println!(
+        "Found {} - {} - {}",
+        package.name, package.version, package.description
+    );
+
+    let response = reqwest::blocking::get(&package.url);
+    let bytes = response
+        .expect("Failed to download package")
+        .bytes()
+        .expect("Failed to read package");
+
+    let filename = format!("/tmp/{}-{}-x86_64.tar.zst", package.name, package.version);
+    std::fs::write(&filename, bytes).expect("failed to save package");
+
+    println!("Downloaded!");
+
+    let home = std::env::var("HOME").expect("Could not determine home directory");
+
+    let install_dir = format!(
+        "{}/.local/share/izac/packages/{}/{}",
+        home, package.name, package.version
+    );
+
+    std::fs::create_dir_all(&install_dir).expect("Failed to create install directory");
+
+    let status = Command::new("tar")
+        .args([
+            "--zstd",
+            "-xf",
+            filename.as_str(),
+            "-C",
+            install_dir.as_str(),
+        ])
+        .status()
+        .expect("Failed to run tar");
+
+    if !status.success() {
+        println!("Failed to extract package");
+        return;
+    }
+
+    let binary = format!("{}/bin/{}", install_dir, package.name);
+    let link = format!("{}/.local/bin/{}", home, package.name);
+
+    std::fs::create_dir_all(format!("{}/.local/bin", home)).expect("Failed to create ~/.local/bin");
+
+    println!("Binary: {}", binary);
+    println!("Link: {}", link);
+
+    // Replace a stale symlink (e.g. from an install made before the record
+    // existed), but never clobber a real file someone else put there.
+    if let Ok(meta) = std::fs::symlink_metadata(&link) {
+        if meta.file_type().is_symlink() {
+            std::fs::remove_file(&link).expect("Failed to remove old symlink");
+        } else {
+            println!("{} exists and is not a symlink, not overwriting", link);
+            return;
+        }
+    }
+
+    symlink(&binary, &link).expect("Failed to create symlink");
+
+    record_install(&package.name, &package.version);
+    println!("Installed {} {}", package.name, package.version);
 }
